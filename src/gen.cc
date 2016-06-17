@@ -1,114 +1,94 @@
 #include <clang-c/Index.h>
 #include <stdio.h>
-void printTokenInfo(CXTranslationUnit translationUnit,CXToken currentToken)
-{
-    CXString tokenString = clang_getTokenSpelling(translationUnit, currentToken);
-    CXTokenKind kind = clang_getTokenKind(currentToken);
+#include <libgen.h>
+#include <cstdlib>
+#include <libgen.h>
+#include <cstring>
+#include <ntsid.h>
 
-    switch (kind) {
-        case CXToken_Comment:
-            printf("Token : %s \t| COMMENT\n", clang_getCString(tokenString));
-            break;
-        case CXToken_Identifier:
-            printf("Token : %s \t| IDENTIFIER\n", clang_getCString(tokenString));
-            break;
-        case CXToken_Keyword:
-            printf("Token : %s \t| KEYWORD\n", clang_getCString(tokenString));
-            break;
-        case CXToken_Literal:
-            printf("Token : %s \t| LITERAL\n", clang_getCString(tokenString));
-            break;
-        case CXToken_Punctuation:
-            printf("Token : %s \t| PUNCTUATION\n", clang_getCString(tokenString));
-            break;
-        default:
-            break;
-    }
-}
 
-void printCursorTokens(CXTranslationUnit translationUnit,CXCursor currentCursor)
-{
-    CXToken *tokens;
-    unsigned int nbTokens;
-    CXSourceRange srcRange;
-
-    srcRange = clang_getCursorExtent(currentCursor);
-
-    clang_tokenize(translationUnit, srcRange, &tokens, &nbTokens);
-
-    for (int i = 0; i < nbTokens; ++i)
-    {
-        CXToken currentToken = tokens[i];
-
-        printTokenInfo(translationUnit,currentToken);
-    }
-
-    clang_disposeTokens(translationUnit,tokens,nbTokens);
-}
 CXChildVisitResult cursorVisitor(CXCursor cursor, CXCursor parent, CXClientData client_data);
-CXChildVisitResult functionDeclVisitor(CXCursor cursor, CXCursor parent, CXClientData client_data);
 
+char *getFilename(char *path);
+
+char *getType(CXType cString);
+
+char * getArgs(const CXCursor &cursor, const CXType &type);
 
 int main(int argc, const char *argv[]) {
 
     const CXIndex index = clang_createIndex(1, 0);
-
-    CXTranslationUnit translationUnit = clang_parseTranslationUnit(
+    const CXTranslationUnit translationUnit = clang_parseTranslationUnit(
             index,
-            "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX10.11.sdk/usr/include/signal.h",
-            argv+1,
-            argc-1,
+            argv[0],
+            argv + 1,
+            argc - 1,
             0, 0, CXTranslationUnit_None);
-
-    CXCursor rootCursor = clang_getTranslationUnitCursor(translationUnit);
-
-    //printCursorTokens(translationUnit,rootCursor);
-
-    unsigned int res = clang_visitChildren(rootCursor, *cursorVisitor,0);    clang_disposeTranslationUnit(translationUnit);
+    const CXCursor rootCursor = clang_getTranslationUnitCursor(translationUnit);
+    printf("@extern object %s{\n", getFilename(
+            (char *) argv[1]));
+    const unsigned int res = clang_visitChildren(rootCursor, cursorVisitor, NULL);
+    printf("}\n");
+    clang_disposeTranslationUnit(translationUnit);
     clang_disposeIndex(index);
 }
 
 
-CXChildVisitResult cursorVisitor(CXCursor cursor, CXCursor parent, CXClientData client_data){
+CXChildVisitResult cursorVisitor(CXCursor cursor, CXCursor parent, CXClientData client_data) {
 
-    CXCursorKind kind = clang_getCursorKind(cursor);
-    CXString name = clang_getCursorSpelling(cursor);
-    if (kind == CXCursor_FunctionDecl || kind == CXCursor_ObjCInstanceMethodDecl)
-    {
-        printf("method '%s'\n",clang_getCString(name));
+    const CXCursorKind kind = clang_getCursorKind(cursor);
+    const CXType type = clang_getCursorType(cursor);
+    const CXType resultType = clang_getResultType(type);
 
-        // visit method childs
-        int nbParams = 0;
-        clang_visitChildren(cursor, *functionDeclVisitor,&nbParams);
+    const CXString name = clang_getCursorSpelling(cursor);
 
-        printf("nb Params : %i'\n",nbParams);
-
-
-        CXSourceLocation location = clang_getCursorLocation(cursor);
-
-        CXString filename;
-        unsigned int line, column;
-
-        clang_getPresumedLocation(location, &filename, &line, &column);
-
-        printf("source location : %s, (%i,%i)\n",clang_getCString(filename),line,column);
+    if (kind == CXCursor_FunctionDecl || kind == CXCursor_ObjCInstanceMethodDecl) {
+        printf("def %s(%s) : %s = extern\n ", clang_getCString(name), getArgs(cursor, type), getType(resultType));
         return CXChildVisit_Continue;
     }
-    //printf("cursor '%s' -> %i\n",clang_getCString(name),kind);
     return CXChildVisit_Recurse;
 }
+//TODO: make variable name
+char *getArgs(const CXCursor &cursor, const CXType &type) {
+    char *result;
+    const int argsCount = clang_Cursor_getNumArguments(cursor);
+    for (int i = 0; i < argsCount; i++) {
+        if (i > 1)strcat(result, ",");
+        CXType type1 = clang_getArgType(type, i);
+        strcat(result, "a:");
+        strcat(result, getType(type1));
 
-CXChildVisitResult functionDeclVisitor(CXCursor cursor, CXCursor parent, CXClientData client_data){
-    CXCursorKind kind = clang_getCursorKind(cursor);
-    CXType type = clang_getCursorType(cursor);
-
-    if (kind == CXCursor_ParmDecl){
-        CXString name = clang_getCursorSpelling(cursor);
-        printf("\tparameter: '%s' of type '%i'\n",clang_getCString(name),type.kind);
-        int *nbParams = (int *)client_data;
-        (*nbParams)++;
     }
-
-    return CXChildVisit_Continue;
-
+    return result;
 }
+//TODO: add all types
+char *getType(CXType type) {
+    switch (type.kind) {
+        case CXType_Void:
+        case CXType_Pointer:
+            return (char *) "Prt[_]";
+        case CXType_Int:
+            return (char *) "CInt";
+        case CXType_Long:
+            return (char *) "CLong";
+        case CXType_ULong:
+            return (char *) "CUnsignedLong";
+        default:
+            return NULL;
+    }
+}
+
+char *getFilename(char *path) {
+    const char *chars = basename(path);
+    int i = 0;
+    while (*(chars + i) != '\0' && *(chars + i) != '.') {
+        i++;
+    }
+    char *result = (char *) malloc(sizeof(char) * i);
+    memcpy(result, chars, i);
+    return result;
+}
+
+
+
+
